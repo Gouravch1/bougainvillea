@@ -1,9 +1,6 @@
 package com.bougainvillea.backend.service;
 
 import java.time.LocalDateTime;
-import java.util.Random;
-
-import javax.management.RuntimeErrorException;
 
 import org.springframework.stereotype.Service;
 
@@ -30,8 +27,9 @@ public class RoomService {
         this.randomCodeGenerator = randomCodeGenerator;
     }
 
-    public RoomResponse createRoom(CreateRoomRequest request , String username){
-        User owner = userRepository.findByUsername(username).orElseThrow();
+    public RoomResponse createRoom(CreateRoomRequest request, String email) {
+        User owner = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found: " + email));
 
         String roomCode;
         do{
