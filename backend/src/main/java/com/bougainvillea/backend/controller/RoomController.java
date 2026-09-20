@@ -8,23 +8,32 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.bougainvillea.backend.dto.request.CreateRoomRequest;
+import com.bougainvillea.backend.dto.request.JoinRoomRequest;
 import com.bougainvillea.backend.dto.response.RoomResponse;
 import com.bougainvillea.backend.service.RoomService;
 
-@RestController 
-@RequestMapping ("/rooms")
+@RestController
+@RequestMapping("/rooms")
 public class RoomController {
     private final RoomService roomService;
 
-    public RoomController(RoomService roomService){
+    public RoomController(RoomService roomService) {
         this.roomService = roomService;
     }
 
     // POST -> CREATE ROOM
-   @PostMapping("/create")
-   public ResponseEntity<RoomResponse> createRoom(@RequestBody CreateRoomRequest createRoomRequest ,Authentication authentication){
+    @PostMapping("/create")
+    public ResponseEntity<RoomResponse> createRoom(@RequestBody CreateRoomRequest createRoomRequest,
+            Authentication authentication) {
         String username = authentication.getName();
 
         return ResponseEntity.ok(roomService.createRoom(createRoomRequest, username));
-   }
+    }
+
+    // JOIN ROOM 
+    @PostMapping("/join")
+    public ResponseEntity<String> joinRoom(@RequestBody JoinRoomRequest request , Authentication authentication){
+         roomService.joinRoom(request , authentication.getName());
+         return ResponseEntity.ok("you've joined the room");
+    }
 }
