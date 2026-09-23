@@ -104,8 +104,11 @@ public class RoomService {
                 .orElseThrow(() -> new RuntimeException("User not found: " + email));
         Room room = roomRepository.findByRoomCode(roomCode)
                 .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
-        if (room.getOwner().getEmail().equals(email))
-            throw new RuntimeException("Owner cannot leave the room. Delete the room instead.");
+        // If owner leaves the room, automatically delete/close the room for everyone
+        if (room.getOwner().getEmail().equals(email)) {
+            deleteRoom(roomCode, email);
+            return;
+        }
 
         RoomMembers member = roomMemberRepository.findByRoomAndUser(room, user)
                 .orElseThrow(() -> new RuntimeException("You are not a member of this room"));
@@ -180,20 +183,14 @@ public class RoomService {
                 .toList();
     }
 
-    // UPLOAD / UPDATE ROOM VIDEO (Members or Owner)
+    // UPLOAD / UPDATE ROOM VIDEO (Owner only)
     @Transactional
     public RoomVideoResponse uploadRoomVideo(String roomCode, MultipartFile file, String email) throws IOException {
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found: " + email));
-
         Room room = roomRepository.findByRoomCode(roomCode)
                 .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
 
-        boolean isOwner = room.getOwner().getEmail().equals(email);
-        boolean isMember = roomMemberRepository.existsByRoomAndUser(room, user);
-
-        if (!isOwner && !isMember) {
-            throw new RuntimeException("You must be a member or owner of this room to upload a video");
+        if (!room.getOwner().getEmail().equals(email)) {
+            throw new RuntimeException("Only the room owner can upload a video");
         }
 
         // Clean up previous video from R2 if one existed
@@ -232,7 +229,7 @@ public class RoomService {
         return new RoomVideoResponse(roomCode, room.getVideoKey(), presignedUrl);
     }
 
-    // DELETE ROOM VIDEO (Members or Owner)
+    // DELETE ROOM VIDEO (Owner only)
     @Transactional
     public void deleteRoomVideo(String roomCode, String email) {
         User user = userRepository.findByEmail(email)
@@ -241,11 +238,8 @@ public class RoomService {
         Room room = roomRepository.findByRoomCode(roomCode)
                 .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
 
-        boolean isOwner = room.getOwner().getEmail().equals(email);
-        boolean isMember = roomMemberRepository.existsByRoomAndUser(room, user);
-
-        if (!isOwner && !isMember) {
-            throw new RuntimeException("You must be a member or owner of this room to delete the video");
+        if (!room.getOwner().getEmail().equals(email)) {
+            throw new RuntimeException("Only the room owner can delete the video");
         }
 
         if (room.getVideoKey() != null && !room.getVideoKey().isBlank()) {
