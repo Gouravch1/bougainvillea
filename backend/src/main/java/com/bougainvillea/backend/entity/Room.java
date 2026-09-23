@@ -34,6 +34,8 @@ public class Room {
 
     private LocalDateTime createdAt;
 
+    private String videoKey;
+
     @ManyToOne
     @JoinColumn(name = "owner_id")
     private User owner;

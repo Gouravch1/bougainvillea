@@ -1,13 +1,18 @@
 package com.bougainvillea.backend.service;
 
+import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import com.bougainvillea.backend.dto.request.CreateRoomRequest;
 import com.bougainvillea.backend.dto.request.JoinRoomRequest;
 import com.bougainvillea.backend.dto.response.RoomResponse;
+import com.bougainvillea.backend.dto.response.RoomVideoResponse;
 import com.bougainvillea.backend.entity.Room;
 import com.bougainvillea.backend.entity.RoomMembers;
 import com.bougainvillea.backend.entity.User;
@@ -22,16 +27,19 @@ public class RoomService {
     private final UserRepository userRepository;
     private final RandomCodeGenerator randomCodeGenerator;
     private final RoomMemberRepository roomMemberRepository;
+    private final R2StorageService r2StorageService;
 
     public RoomService(RoomRepository roomRepository,
                        UserRepository userRepository,
                        RandomCodeGenerator randomCodeGenerator,
-                       RoomMemberRepository roomMemberRepository
+                       RoomMemberRepository roomMemberRepository,
+                       R2StorageService r2StorageService
     ) {
         this.roomRepository = roomRepository;
         this.userRepository = userRepository;
         this.randomCodeGenerator = randomCodeGenerator;
         this.roomMemberRepository = roomMemberRepository;
+        this.r2StorageService = r2StorageService;
     }
 
     // CREATE ROOM
@@ -123,5 +131,83 @@ public class RoomService {
         RoomMembers member = roomMemberRepository.findByRoomAndUser(room, target)
                 .orElseThrow(() -> new RuntimeException("User is not a member of this room"));
         roomMemberRepository.delete(member);
+    }
+
+    // GET ROOM MEMBERS (Only members/owner)
+   public List<RoomMembers> getAllMembers(String roomCode, String email) {
+    User user = userRepository.findByEmail(email)
+            .orElseThrow(() -> new RuntimeException("User not found: " + email));
+
+    Room room = roomRepository.findByRoomCode(roomCode)
+            .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
+
+    boolean isOwner = room.getOwner().getEmail().equals(email);
+    boolean isMember = roomMemberRepository.existsByRoomAndUser(room, user);
+
+    if (!isOwner && !isMember) {
+        throw new RuntimeException("You must be a member of the room to view member list");
+    }
+
+    return roomMemberRepository.findByRoom(room);
+    }
+
+    // GET ALL PUBLIC ROOMS
+    public List<RoomResponse> getAllPublicRooms() {
+        return roomRepository.findByIsPublicTrue()
+                .stream()
+                .map(room -> new RoomResponse(room.getRoomCode(), room.getRoomName(), room.isPublic()))
+                .toList();
+    }
+
+    // UPLOAD / UPDATE ROOM VIDEO (Members or Owner)
+    @Transactional
+    public RoomVideoResponse uploadRoomVideo(String roomCode, MultipartFile file, String email) throws IOException {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found: " + email));
+
+        Room room = roomRepository.findByRoomCode(roomCode)
+                .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
+
+        boolean isOwner = room.getOwner().getEmail().equals(email);
+        boolean isMember = roomMemberRepository.existsByRoomAndUser(room, user);
+
+        if (!isOwner && !isMember) {
+            throw new RuntimeException("You must be a member or owner of this room to upload a video");
+        }
+
+        // Clean up previous video from R2 if one existed
+        if (room.getVideoKey() != null && !room.getVideoKey().isBlank()) {
+            r2StorageService.deleteFile(room.getVideoKey());
+        }
+
+        String newVideoKey = r2StorageService.uploadFile(file);
+        room.setVideoKey(newVideoKey);
+        roomRepository.save(room);
+
+        String presignedUrl = r2StorageService.generatePresignedUrl(newVideoKey);
+        return new RoomVideoResponse(roomCode, newVideoKey, presignedUrl);
+    }
+
+    // GET ROOM VIDEO PRESIGNED URL (Members, Owner, or Public Room)
+    public RoomVideoResponse getRoomVideo(String roomCode, String email) {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found: " + email));
+
+        Room room = roomRepository.findByRoomCode(roomCode)
+                .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
+
+        boolean isOwner = room.getOwner().getEmail().equals(email);
+        boolean isMember = roomMemberRepository.existsByRoomAndUser(room, user);
+
+        if (!room.isPublic() && !isOwner && !isMember) {
+            throw new RuntimeException("You must be a member of this room to access its video");
+        }
+
+        if (room.getVideoKey() == null || room.getVideoKey().isBlank()) {
+            return new RoomVideoResponse(roomCode, null, null);
+        }
+
+        String presignedUrl = r2StorageService.generatePresignedUrl(room.getVideoKey());
+        return new RoomVideoResponse(roomCode, room.getVideoKey(), presignedUrl);
     }
 }
