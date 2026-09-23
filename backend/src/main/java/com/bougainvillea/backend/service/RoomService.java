@@ -62,6 +62,13 @@ public class RoomService {
 
         roomRepository.save(room);
 
+        // Add owner as the first room member so owner appears in member list
+        RoomMembers ownerMember = new RoomMembers();
+        ownerMember.setRoom(room);
+        ownerMember.setUser(owner);
+        ownerMember.setJoinedAt(LocalDateTime.now());
+        roomMemberRepository.save(ownerMember);
+
         return new RoomResponse(room.getRoomCode(), room.getRoomName(), room.isPublic());
     }
 
@@ -71,8 +78,17 @@ public class RoomService {
                 .orElseThrow(() -> new RuntimeException("User not found: " + email));
         Room room = roomRepository.findByRoomCode(request.getRoomCode())
                 .orElseThrow(() -> new RuntimeException("Room not found: " + request.getRoomCode()));
-        if (roomMemberRepository.existsByRoomAndUser(room, user))
-            throw new RuntimeException("You've already joined the room");
+
+        if (room.getOwner().getEmail().equals(email) || roomMemberRepository.existsByRoomAndUser(room, user)) {
+            throw new RuntimeException("You are already in this room");
+        }
+
+        // Verify password for private rooms
+        if (!room.isPublic()) {
+            if (request.getPassword() == null || !request.getPassword().equals(room.getRoomPassword())) {
+                throw new RuntimeException("Invalid room password");
+            }
+        }
 
         RoomMembers roomMember = new RoomMembers();
         roomMember.setRoom(room);
@@ -106,6 +122,11 @@ public class RoomService {
 
         if (!room.getOwner().getEmail().equals(email))
             throw new RuntimeException("Only the room owner can delete this room");
+
+        // Clean up video from R2 when deleting room
+        if (room.getVideoKey() != null && !room.getVideoKey().isBlank()) {
+            r2StorageService.deleteFile(room.getVideoKey());
+        }
 
         roomMemberRepository.deleteAllByRoom(room);
         roomRepository.delete(room);
@@ -209,5 +230,28 @@ public class RoomService {
 
         String presignedUrl = r2StorageService.generatePresignedUrl(room.getVideoKey());
         return new RoomVideoResponse(roomCode, room.getVideoKey(), presignedUrl);
+    }
+
+    // DELETE ROOM VIDEO (Members or Owner)
+    @Transactional
+    public void deleteRoomVideo(String roomCode, String email) {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found: " + email));
+
+        Room room = roomRepository.findByRoomCode(roomCode)
+                .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
+
+        boolean isOwner = room.getOwner().getEmail().equals(email);
+        boolean isMember = roomMemberRepository.existsByRoomAndUser(room, user);
+
+        if (!isOwner && !isMember) {
+            throw new RuntimeException("You must be a member or owner of this room to delete the video");
+        }
+
+        if (room.getVideoKey() != null && !room.getVideoKey().isBlank()) {
+            r2StorageService.deleteFile(room.getVideoKey());
+            room.setVideoKey(null);
+            roomRepository.save(room);
+        }
     }
 }

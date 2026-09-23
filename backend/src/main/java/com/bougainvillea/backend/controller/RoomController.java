@@ -94,5 +94,13 @@ public class RoomController {
                                                           Authentication authentication) {
         return ResponseEntity.ok(roomService.getRoomVideo(roomCode, authentication.getName()));
     }
+
+    // DELETE -> DELETE ROOM VIDEO
+    @DeleteMapping("/{roomCode}/video")
+    public ResponseEntity<String> deleteRoomVideo(@PathVariable String roomCode,
+                                                  Authentication authentication) {
+        roomService.deleteRoomVideo(roomCode, authentication.getName());
+        return ResponseEntity.ok("Room video deleted successfully");
+    }
 }
 
