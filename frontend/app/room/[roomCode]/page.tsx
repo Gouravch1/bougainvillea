@@ -3,7 +3,6 @@
 import React, { useEffect, useState, useCallback, useRef, use } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Clapperboard,
   Share2,
   Check,
   LogOut,
@@ -11,7 +10,6 @@ import {
   Crown,
   Users,
   MessageSquare,
-  Info,
   AlertTriangle,
   UserX,
   XCircle,
@@ -22,7 +20,8 @@ import { RoomMember, RoomVideoResponse } from "@/lib/types";
 import { useAuthContext } from "@/context/auth-context";
 import { VideoPlayer } from "@/components/room/video-player";
 import { MembersList } from "@/components/room/members-list";
-import { ChatPanel } from "@/components/room/chat-panel";
+import { ChatPanel, ChatMessageItem } from "@/components/room/chat-panel";
+import { useRoomSocket, SyncMessage, ChatMessage } from "@/hooks/use-room-socket";
 
 interface RoomPageProps {
   params: Promise<{ roomCode: string }>;
@@ -43,12 +42,27 @@ export default function RoomPage({ params }: RoomPageProps) {
   const [ownerEmail, setOwnerEmail] = useState<string | undefined>(undefined);
   const [roomTitle, setRoomTitle] = useState<string>(roomCode);
 
+  // WebSocket real-time state
+  const [latestSyncMessage, setLatestSyncMessage] = useState<SyncMessage | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessageItem[]>([
+    {
+      id: "welcome-1",
+      sender: "Bougainvillea",
+      text: "Welcome to the cinema! Grab a drink, settle in, and enjoy the film together.",
+      time: "Just now",
+      isHost: false,
+    },
+  ]);
+
   // Leave / Exit Confirmation Modal
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [leavingRoom, setLeavingRoom] = useState(false);
 
-  // Mobile navigation tab: "chat" | "members" | "info"
-  const [mobileTab, setMobileTab] = useState<"chat" | "members" | "info">("chat");
+  // Desktop floating audience panel
+  const [showAudiencePanel, setShowAudiencePanel] = useState(false);
+
+  // Mobile navigation tab: "chat" | "members"
+  const [mobileTab, setMobileTab] = useState<"chat" | "members">("chat");
 
   // Status popups: "kicked" | "room_closed" | null
   const [exitNotice, setExitNotice] = useState<"kicked" | "room_closed" | null>(null);
@@ -58,6 +72,32 @@ export default function RoomPage({ params }: RoomPageProps) {
   useEffect(() => {
     isOwnerRef.current = isOwner;
   }, [isOwner]);
+
+  // Real-time WebSocket Handlers
+  const handleSyncMessage = useCallback((msg: SyncMessage) => {
+    setLatestSyncMessage(msg);
+  }, []);
+
+  const handleChatMessage = useCallback(
+    (msg: ChatMessage) => {
+      const formatted: ChatMessageItem = {
+        id: `${msg.timestamp}-${Math.random()}`,
+        sender: msg.sender,
+        text: msg.content,
+        time: new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        isHost: msg.sender === ownerEmail,
+      };
+      setChatMessages((prev) => [...prev, formatted]);
+    },
+    [ownerEmail]
+  );
+
+  const { isConnected, sendSyncAction, sendChatMessage } = useRoomSocket({
+    roomCode,
+    username: user?.username || "Guest",
+    onSyncMessage: handleSyncMessage,
+    onChatMessage: handleChatMessage,
+  });
 
   // Intercept browser back button / swipe gestures so user is prompted before leaving
   useEffect(() => {
@@ -84,9 +124,7 @@ export default function RoomPage({ params }: RoomPageProps) {
 
       setMembers(membersData);
 
-      // CRITICAL FIX: S3/R2 presigned URLs have a new timestamp signature on every GET request.
-      // If we update videoData on every 3.5s poll, <video src> changes every 3.5s, which forces
-      // the browser to reload and stop/blink the video!
+      // S3/R2 presigned URLs have a new timestamp signature on every GET request.
       // We only update videoData if:
       // 1. forceVideoRefresh is explicitly true (e.g. after upload/delete)
       // 2. videoKey actually changed (different video or removed)
@@ -100,7 +138,6 @@ export default function RoomPage({ params }: RoomPageProps) {
           prev.videoKey === videoRes.videoKey &&
           prev.videoUrl
         ) {
-          // Video is identical; keep previous stable presigned URL
           return prev;
         }
         return videoRes;
@@ -128,13 +165,11 @@ export default function RoomPage({ params }: RoomPageProps) {
         if (amIMember) {
           hasEverBeenInMembers.current = true;
         } else if (hasEverBeenInMembers.current && !isOwnerRef.current) {
-          // User was previously in the room, but now kicked!
           setExitNotice("kicked");
           return;
         }
       }
     } catch (err: unknown) {
-      // Room was closed / deleted by owner!
       if (!isOwnerRef.current) {
         setExitNotice("room_closed");
       }
@@ -148,12 +183,12 @@ export default function RoomPage({ params }: RoomPageProps) {
     checkRoomStatus();
   }, [checkRoomStatus]);
 
-  // Polling every 3.5 seconds
+  // Polling every 4 seconds for membership fallback
   useEffect(() => {
     if (exitNotice) return;
     const interval = setInterval(() => {
       checkRoomStatus();
-    }, 3500);
+    }, 4000);
     return () => clearInterval(interval);
   }, [checkRoomStatus, exitNotice]);
 
@@ -204,7 +239,7 @@ export default function RoomPage({ params }: RoomPageProps) {
   }, [checkRoomStatus]);
 
   return (
-    <main className="min-h-screen bg-[#f2efe7] pb-24 sm:pb-32 text-[#163a5c]">
+    <main className="h-screen h-dvh flex flex-col bg-[#f2efe7] text-[#163a5c] overflow-hidden">
       {/* LEAVE ROOM CONFIRMATION MODAL */}
       {showLeaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
@@ -219,34 +254,38 @@ export default function RoomPage({ params }: RoomPageProps) {
 
             <p className="mt-2 text-xs leading-relaxed text-[#163a5c]/75">
               {isOwner
-                ? "You are the host. Closing the room will end the watch party and disconnect all viewers. Do you want to close and leave the room?"
-                : "You are currently in this watch party. Do you want to leave the room?"}
+                ? "As the host, closing the room will terminate the cinema session for all viewers."
+                : "Are you sure you want to step out of this theater? You can rejoin anytime with the invite code."}
             </p>
 
-            <div className="mt-5 flex items-center gap-2.5">
+            <div className="mt-6 flex items-center gap-3">
               <button
                 type="button"
                 onClick={() => setShowLeaveModal(false)}
                 disabled={leavingRoom}
-                className="flex-1 rounded-xl border border-[#163a5c]/20 bg-white py-2.5 text-xs font-bold text-[#163a5c] hover:bg-black/5 transition"
+                className="flex-1 rounded-xl border border-[#163a5c]/20 bg-white py-2.5 text-xs font-semibold text-[#163a5c] hover:bg-[#163a5c]/5 transition"
               >
-                Stay in Room
+                Stay Here
               </button>
 
               <button
                 type="button"
                 onClick={confirmLeaveRoom}
                 disabled={leavingRoom}
-                className="flex-1 rounded-xl bg-red-600 py-2.5 text-xs font-bold text-white shadow-md hover:bg-red-700 transition disabled:opacity-50"
+                className={`flex-1 rounded-xl py-2.5 text-xs font-bold text-white transition ${
+                  isOwner
+                    ? "bg-red-600 hover:bg-red-700 shadow-md"
+                    : "bg-[#172d4d] hover:bg-[#a83f68]"
+                }`}
               >
-                {leavingRoom ? "Exiting..." : isOwner ? "Yes, Close Room" : "Yes, Leave Room"}
+                {leavingRoom ? "Exiting..." : isOwner ? "Yes, Close Room" : "Yes, Leave"}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* KICKED OR ROOM CLOSED POPUP OVERLAY */}
+      {/* KICKED OR ROOM CLOSED FULLSCREEN POPUP */}
       {exitNotice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#07131e]/85 backdrop-blur-xl animate-in fade-in duration-300">
           <div className="w-full max-w-sm rounded-3xl border border-white/20 bg-[#f2efe7] p-6 text-center text-[#163a5c] shadow-2xl">
@@ -274,10 +313,10 @@ export default function RoomPage({ params }: RoomPageProps) {
         </div>
       )}
 
-      {/* Top Header — Mobile Optimized & Clean */}
-      <header className="sticky top-0 z-30 border-b border-[#163a5c]/10 bg-[#f2efe7]/90 backdrop-blur-md px-3 sm:px-8 py-3">
+      {/* Top Header */}
+      <header className="sticky top-0 z-30 shrink-0 border-b border-[#163a5c]/10 bg-[#f2efe7]/90 backdrop-blur-md px-3 sm:px-8 py-2.5 sm:py-3">
         <div className="mx-auto flex max-w-[1560px] items-center justify-between gap-2 sm:gap-4">
-          {/* Room Title (Back button removed) */}
+          {/* Room Title & Status */}
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 sm:gap-2">
@@ -326,23 +365,29 @@ export default function RoomPage({ params }: RoomPageProps) {
       </header>
 
       {/* Main Container */}
-      <div className="mx-auto max-w-[1560px] px-3 sm:px-8 pt-3 sm:pt-6">
-        <div className="grid gap-4 sm:gap-6 lg:grid-cols-[1fr_360px] xl:grid-cols-[1fr_400px]">
+      <div className="flex-1 min-h-0 flex flex-col mx-auto w-full max-w-[1560px] px-2.5 sm:px-6 lg:px-8 pt-2 sm:pt-4 lg:pt-5 pb-2 lg:pb-4">
+        <div className="flex-1 min-h-0 grid gap-2.5 sm:gap-4 lg:gap-5 lg:grid-cols-[1fr_340px] xl:grid-cols-[1fr_380px]">
           {/* Cinema Screen (Left) */}
-          <div className="flex flex-col gap-4">
-            <VideoPlayer
-              roomCode={roomCode}
-              videoUrl={videoData?.videoUrl || null}
-              videoKey={videoData?.videoKey || null}
-              isOwner={isOwner}
-              onVideoUpdated={handleVideoUpdated}
-            />
+          <div className="flex-1 min-h-0 flex flex-col gap-2 sm:gap-3 lg:gap-4">
+            <div className="shrink-0 lg:mt-0">
+              <VideoPlayer
+                roomCode={roomCode}
+                videoUrl={videoData?.videoUrl || null}
+                videoKey={videoData?.videoKey || null}
+                isOwner={isOwner}
+                onVideoUpdated={handleVideoUpdated}
+                sendSyncAction={sendSyncAction}
+                syncMessage={latestSyncMessage}
+                isConnected={isConnected}
+                currentUsername={user?.username}
+              />
+            </div>
 
-            {/* Mobile Tab Switcher: Chat / Audience / Info */}
-            <div className="flex lg:hidden items-center justify-between rounded-2xl border border-[#163a5c]/15 bg-white/80 p-1 shadow-sm">
+            {/* Mobile Tab Switcher: Chat / Audience */}
+            <div className="shrink-0 flex lg:hidden items-center justify-between rounded-xl sm:rounded-2xl border border-[#163a5c]/15 bg-white/80 p-1 shadow-sm">
               <button
                 onClick={() => setMobileTab("chat")}
-                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold transition ${
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg sm:rounded-xl py-1.5 sm:py-2 text-xs font-bold transition ${
                   mobileTab === "chat"
                     ? "bg-[#172d4d] text-[#f8f5ed] shadow-sm"
                     : "text-[#163a5c]/70 hover:bg-[#163a5c]/5"
@@ -353,7 +398,7 @@ export default function RoomPage({ params }: RoomPageProps) {
 
               <button
                 onClick={() => setMobileTab("members")}
-                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold transition ${
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg sm:rounded-xl py-1.5 sm:py-2 text-xs font-bold transition ${
                   mobileTab === "members"
                     ? "bg-[#172d4d] text-[#f8f5ed] shadow-sm"
                     : "text-[#163a5c]/70 hover:bg-[#163a5c]/5"
@@ -361,23 +406,19 @@ export default function RoomPage({ params }: RoomPageProps) {
               >
                 <Users size={13} /> Audience ({members.length})
               </button>
-
-              <button
-                onClick={() => setMobileTab("info")}
-                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold transition ${
-                  mobileTab === "info"
-                    ? "bg-[#172d4d] text-[#f8f5ed] shadow-sm"
-                    : "text-[#163a5c]/70 hover:bg-[#163a5c]/5"
-                }`}
-              >
-                <Info size={13} /> Details
-              </button>
             </div>
 
-            {/* Mobile View: Render active tab */}
-            <div className="block lg:hidden">
+            {/* Mobile View: Render active tab fitting the rest of the screen */}
+            <div className="flex-1 min-h-0 flex flex-col lg:hidden">
               {mobileTab === "chat" && (
-                <ChatPanel currentUser={user} ownerEmail={ownerEmail} />
+                <ChatPanel
+                  currentUser={user}
+                  ownerEmail={ownerEmail}
+                  messages={chatMessages}
+                  onSendMessage={sendChatMessage}
+                  isConnected={isConnected}
+                  className="flex-1 min-h-0"
+                />
               )}
               {mobileTab === "members" && (
                 <MembersList
@@ -387,58 +428,144 @@ export default function RoomPage({ params }: RoomPageProps) {
                   currentUserEmail={user?.email}
                   isOwner={isOwner}
                   onMemberKicked={checkRoomStatus}
+                  className="flex-1 min-h-0"
                 />
               )}
-              {mobileTab === "info" && (
-                <div className="rounded-3xl border border-[#163a5c]/15 bg-white/70 p-5 shadow-sm">
-                  <h3 className="font-cormorant text-2xl font-bold text-[#163a5c]">
-                    Theater Information
-                  </h3>
-                  <p className="mt-1 text-xs text-[#163a5c]/70">
-                    Room Code: <span className="font-mono font-bold text-[#a83f68]">{roomCode}</span>
-                  </p>
-                  <p className="mt-3 text-xs leading-relaxed text-[#163a5c]/70">
-                    Streamed live via Cloudflare R2 storage. Only the host can upload, change, or remove the film.
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Desktop Info Card */}
-            <div className="hidden lg:block rounded-3xl border border-[#163a5c]/15 bg-white/70 p-5 shadow-sm">
-              <div className="flex items-center justify-between border-b border-[#163a5c]/10 pb-3">
-                <div>
-                  <h3 className="font-cormorant text-2xl font-bold text-[#163a5c]">
-                    Theater Information
-                  </h3>
-                  <p className="mt-0.5 text-xs text-[#163a5c]/70">
-                    Room Code: <span className="font-mono font-bold text-[#a83f68]">{roomCode}</span>
-                  </p>
-                </div>
-                <span className="rounded-full bg-[#163a5c]/10 px-3 py-1 text-[10px] font-bold uppercase text-[#163a5c]">
-                  Cloudflare R2 Stream
-                </span>
-              </div>
-              <p className="mt-3 text-xs leading-relaxed text-[#163a5c]/70">
-                High-definition sync with low-latency delivery. Host holds complete authority over film streaming.
-              </p>
             </div>
           </div>
 
-          {/* Sidebar on Desktop (Always visible side-by-side) */}
-          <div className="hidden lg:flex flex-col gap-5">
-            <MembersList
-              roomCode={roomCode}
-              members={members}
+          {/* Sidebar on Desktop — full-height Chat only */}
+          <div className="hidden lg:flex flex-col min-h-0">
+            <ChatPanel
+              currentUser={user}
               ownerEmail={ownerEmail}
-              currentUserEmail={user?.email}
-              isOwner={isOwner}
-              onMemberKicked={checkRoomStatus}
+              messages={chatMessages}
+              onSendMessage={sendChatMessage}
+              isConnected={isConnected}
+              className="flex-1 min-h-0"
             />
-
-            <ChatPanel currentUser={user} ownerEmail={ownerEmail} />
           </div>
         </div>
+      </div>
+
+      {/* ── Desktop Floating Audience FAB ── */}
+      <div className="hidden lg:block">
+        {/* Invisible click-outside closer */}
+        {showAudiencePanel && (
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setShowAudiencePanel(false)}
+          />
+        )}
+
+        {/* Sliding Panel */}
+        <div
+          className={`fixed top-0 right-0 z-50 h-full w-[320px] flex flex-col bg-[#f2efe7]/95 backdrop-blur-xl border-l border-[#163a5c]/15 shadow-2xl transition-transform duration-300 ease-[cubic-bezier(.32,.72,0,1)] ${
+            showAudiencePanel ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          {/* Panel Header */}
+          <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-[#163a5c]/10">
+            <div className="flex items-center gap-2.5">
+              <div className="grid size-8 place-items-center rounded-xl bg-[#172d4d] text-[#f8f5ed]">
+                <Users size={15} />
+              </div>
+              <div>
+                <h3 className="font-cormorant text-xl font-bold text-[#163a5c]">Audience</h3>
+                <p className="text-[10px] text-[#163a5c]/50">{members.length} {members.length === 1 ? "watcher" : "watchers"}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowAudiencePanel(false)}
+              className="grid size-8 place-items-center rounded-xl text-[#163a5c]/50 hover:bg-[#163a5c]/8 hover:text-[#163a5c] transition"
+            >
+              <XCircle size={18} />
+            </button>
+          </div>
+
+          {/* Members list inside panel */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2">
+            {members.map((member) => {
+              const isMemberOwner = member.user.email === ownerEmail;
+              const isMe = member.user.email === user?.email;
+              return (
+                <div
+                  key={member.id}
+                  className="flex items-center justify-between gap-3 rounded-2xl border border-[#163a5c]/10 bg-white/70 p-3 transition hover:bg-white"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className={`grid size-9 shrink-0 place-items-center rounded-full font-bold text-xs text-white ${
+                        isMemberOwner ? "bg-[#a83f68]" : "bg-[#172d4d]"
+                      }`}
+                    >
+                      {member.user.username.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-xs font-bold text-[#163a5c]">
+                          {member.user.username}
+                        </span>
+                        {isMe && (
+                          <span className="text-[10px] text-[#163a5c]/45 font-medium">(You)</span>
+                        )}
+                      </div>
+                      <span className="text-[9px] text-[#163a5c]/40 font-mono">
+                        Joined {new Date(member.joinedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="shrink-0">
+                    {isMemberOwner ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#a83f68]/15 px-2.5 py-1 text-[9px] font-bold uppercase text-[#a83f68]">
+                        <Crown size={10} /> Host
+                      </span>
+                    ) : isOwner && !isMe ? (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Remove @${member.user.username} from this room?`)) return;
+                          try {
+                            await api.rooms.kick(roomCode, member.user.id);
+                            checkRoomStatus();
+                          } catch { /* handled */ }
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[9px] font-semibold text-red-600 hover:bg-red-100 transition"
+                      >
+                        <UserX size={10} /> Kick
+                      </button>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[#163a5c]/8 px-2.5 py-1 text-[9px] font-medium text-[#163a5c]/55">
+                        Viewer
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* FAB trigger — anchored to right edge, vertically centered */}
+        <button
+          onClick={() => setShowAudiencePanel((v) => !v)}
+          style={{ top: "50%", transform: "translateY(-50%) translateX(0)" }}
+          className={`fixed right-0 z-50 flex flex-col items-center gap-1.5 rounded-l-2xl border border-r-0 border-[#163a5c]/20 bg-[#172d4d] px-2.5 py-4 text-[#f8f5ed] shadow-xl transition-all duration-300 hover:bg-[#a83f68] group ${
+            showAudiencePanel ? "opacity-0 pointer-events-none" : "opacity-100"
+          }`}
+          title="View Audience"
+        >
+          <Users size={16} />
+          <span
+            className="text-[8px] font-bold uppercase tracking-widest"
+            style={{ writingMode: "vertical-rl", textOrientation: "mixed" }}
+          >
+            Audience
+          </span>
+          <span className="grid size-5 place-items-center rounded-full bg-white/20 text-[9px] font-bold">
+            {members.length}
+          </span>
+        </button>
       </div>
     </main>
   );

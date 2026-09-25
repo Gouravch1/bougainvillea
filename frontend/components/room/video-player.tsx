@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { SyncActionType, SyncMessage } from "@/hooks/use-room-socket";
 
 interface VideoPlayerProps {
   roomCode: string;
@@ -23,6 +24,10 @@ interface VideoPlayerProps {
   videoKey: string | null;
   isOwner: boolean;
   onVideoUpdated: () => void;
+  sendSyncAction?: (action: SyncActionType, currentTime: number, playbackRate?: number) => void;
+  syncMessage?: SyncMessage | null;
+  isConnected?: boolean;
+  currentUsername?: string;
 }
 
 export const VideoPlayer = React.memo(function VideoPlayer({
@@ -31,6 +36,10 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   videoKey,
   isOwner,
   onVideoUpdated,
+  sendSyncAction,
+  syncMessage,
+  isConnected = false,
+  currentUsername,
 }: VideoPlayerProps) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -48,6 +57,79 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   const [volume, setVolume] = useState(1);
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Flag to suppress echoing events that were initiated remotely via WebSocket
+  const isRemoteActionRef = useRef(false);
+
+  // Listen to remote WebSocket sync messages
+  useEffect(() => {
+    if (!syncMessage || !videoRef.current) return;
+
+    // Suppress local echo
+    if (syncMessage.sender && syncMessage.sender === currentUsername) {
+      return;
+    }
+
+    isRemoteActionRef.current = true;
+
+    switch (syncMessage.action) {
+      case "PLAY": {
+        const latency = Math.max(0, (Date.now() - syncMessage.timestamp) / 1000);
+        const expectedTime = syncMessage.currentTime + latency;
+        if (Math.abs(videoRef.current.currentTime - expectedTime) > 0.4) {
+          videoRef.current.currentTime = expectedTime;
+        }
+        videoRef.current
+          .play()
+          .then(() => setIsPlaying(true))
+          .catch(() => {
+            console.warn("[VideoPlayer] Autoplay prevented, requires user interaction.");
+          });
+        break;
+      }
+      case "PAUSE": {
+        videoRef.current.pause();
+        videoRef.current.currentTime = syncMessage.currentTime;
+        setIsPlaying(false);
+        break;
+      }
+      case "SEEK": {
+        videoRef.current.currentTime = syncMessage.currentTime;
+        setCurrentTime(syncMessage.currentTime);
+        break;
+      }
+      case "SPEED_CHANGE": {
+        if (syncMessage.playbackRate) {
+          videoRef.current.playbackRate = syncMessage.playbackRate;
+        }
+        break;
+      }
+      case "SYNC_REQUEST": {
+        // If we are the host and someone joins asking for state, broadcast our current state
+        if (isOwner && sendSyncAction && videoRef.current) {
+          sendSyncAction(
+            videoRef.current.paused ? "PAUSE" : "PLAY",
+            videoRef.current.currentTime,
+            videoRef.current.playbackRate
+          );
+        }
+        break;
+      }
+      case "SYNC_RESPONSE": {
+        if (!isOwner && videoRef.current) {
+          const latency = Math.max(0, (Date.now() - syncMessage.timestamp) / 1000);
+          videoRef.current.currentTime = syncMessage.currentTime + latency;
+        }
+        break;
+      }
+    }
+
+    const timer = setTimeout(() => {
+      isRemoteActionRef.current = false;
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [syncMessage, isOwner, currentUsername, sendSyncAction]);
 
   // Handle keyboard shortcut (Space to toggle play) - Owner only
   useEffect(() => {
@@ -75,10 +157,17 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     }
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      videoRef.current
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          sendSyncAction?.("PLAY", videoRef.current?.currentTime || 0);
+        })
+        .catch(() => {});
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
+      sendSyncAction?.("PAUSE", videoRef.current.currentTime || 0);
     }
   };
 
@@ -101,6 +190,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
     setCurrentTime(time);
     if (videoRef.current) {
       videoRef.current.currentTime = time;
+      sendSyncAction?.("SEEK", time);
     }
   };
 
@@ -214,8 +304,18 @@ export const VideoPlayer = React.memo(function VideoPlayer({
               onClick={isOwner ? togglePlay : undefined}
               onTimeUpdate={handleTimeUpdate}
               onLoadedMetadata={handleLoadedMetadata}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
+              onPlay={() => {
+                setIsPlaying(true);
+                if (!isRemoteActionRef.current && isOwner) {
+                  sendSyncAction?.("PLAY", videoRef.current?.currentTime || 0);
+                }
+              }}
+              onPause={() => {
+                setIsPlaying(false);
+                if (!isRemoteActionRef.current && isOwner) {
+                  sendSyncAction?.("PAUSE", videoRef.current?.currentTime || 0);
+                }
+              }}
               onEnded={() => setIsPlaying(false)}
               className={`h-full w-full object-contain ${isOwner ? "cursor-pointer" : "cursor-default"}`}
             />
@@ -320,12 +420,6 @@ export const VideoPlayer = React.memo(function VideoPlayer({
                 </div>
 
                 <div className="flex items-center gap-1.5 sm:gap-2">
-                  {/* Theater status badge */}
-                  <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white/80">
-                    <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Synced
-                  </span>
-
                   {/* Fullscreen */}
                   <button
                     onClick={toggleFullscreen}
@@ -349,62 +443,38 @@ export const VideoPlayer = React.memo(function VideoPlayer({
                 <div className="grid size-12 sm:size-16 place-items-center rounded-2xl border border-[#a83f68]/40 bg-[#a83f68]/20 text-[#d77991] shadow-inner mb-3 sm:mb-4">
                   <Film size={22} className="sm:size-7" />
                 </div>
-                <h3 className="font-cormorant text-2xl sm:text-3xl font-semibold text-[#f8f5ed]">
-                  The screen is yours.
-                </h3>
-                <p className="mt-1 text-[11px] sm:text-xs text-[#dce9ed]/75 leading-relaxed">
-                  Upload an MP4, WebM, or MKV film to start the party for your room.
+                <h3 className="font-cormorant text-2xl sm:text-3xl font-bold">The Screen is Dark</h3>
+                <p className="mt-1 text-xs text-[#f2efe7]/70 max-w-xs">
+                  Upload a film to begin streaming to everyone in the room simultaneously.
                 </p>
-
-                {error && (
-                  <div className="mt-3 flex items-center gap-2 rounded-xl bg-red-950/80 border border-red-700/50 p-2 text-xs text-red-300">
-                    <AlertCircle size={14} className="shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
 
                 <input
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileChange}
-                  accept="video/mp4,video/webm,video/ogg,video/quicktime,video/x-matroska"
+                  accept="video/mp4,video/webm,video/quicktime,video/mkv,video/*"
                   className="hidden"
                 />
 
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploading}
-                  className="mt-4 sm:mt-5 flex items-center gap-2 rounded-full bg-[#a83f68] px-5 sm:px-6 py-2.5 sm:py-3 text-[11px] sm:text-xs font-bold uppercase tracking-[.15em] text-[#f8f5ed] shadow-lg transition hover:bg-[#bd4a77] hover:scale-105 disabled:opacity-50"
+                  className="mt-4 sm:mt-5 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#a83f68] to-[#be557e] px-4 sm:px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white shadow-lg transition hover:scale-105 active:scale-95 disabled:opacity-50"
                 >
                   <Upload size={14} />
-                  {uploading ? "Uploading..." : "Upload Film to Screen"}
+                  {uploading ? `Uploading (${uploadProgress ?? 0}%)...` : "Upload Film (MP4 / WebM)"}
                 </button>
-
-                {uploadProgress !== null && (
-                  <div className="mt-3 w-48 sm:w-60">
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/20">
-                      <div
-                        className="h-full bg-[#a83f68] transition-all duration-300"
-                        style={{ width: `${uploadProgress}%` }}
-                      />
-                    </div>
-                    <span className="mt-1 block text-[9px] text-[#dce9ed]/60">
-                      Uploading to Cloudflare R2...
-                    </span>
-                  </div>
-                )}
+                <span className="mt-2 text-[10px] text-[#f2efe7]/50">Max limit: 500 MB</span>
               </div>
             ) : (
-              /* Member Waiting Screen */
-              <div className="relative z-10 flex max-w-xs flex-col items-center">
-                <div className="grid size-12 sm:size-16 place-items-center rounded-2xl border border-white/10 bg-white/5 text-[#dce9ed]/70 mb-3 animate-pulse">
-                  <Film size={22} className="sm:size-7" />
+              /* Guest Waiting State */
+              <div className="relative z-10 flex max-w-sm flex-col items-center">
+                <div className="grid size-12 sm:size-14 place-items-center rounded-2xl border border-white/10 bg-white/5 text-white/60 mb-3">
+                  <Film size={24} />
                 </div>
-                <h3 className="font-cormorant text-2xl sm:text-3xl font-semibold text-[#f8f5ed]">
-                  Waiting for host...
-                </h3>
-                <p className="mt-1 text-[11px] sm:text-xs text-[#dce9ed]/75 leading-relaxed">
-                  The host is preparing the film for tonight. Settle in and chat!
+                <h3 className="font-cormorant text-xl sm:text-2xl font-bold">Awaiting Host Broadcast</h3>
+                <p className="mt-1 text-xs text-[#f2efe7]/60">
+                  The room host has not queued a film yet. Sit back with your snacks!
                 </p>
               </div>
             )}
@@ -412,42 +482,56 @@ export const VideoPlayer = React.memo(function VideoPlayer({
         )}
       </div>
 
-      {/* Owner controls row */}
-      {videoUrl && isOwner && (
-        <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#163a5c]/15 bg-white/80 p-3 sm:p-4 shadow-sm backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <span className="size-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-[#163a5c]">
-              Film Active
+      {/* Owner Film Controls bar under the screen */}
+      {isOwner && videoUrl && (
+        <div className="flex items-center justify-between rounded-2xl border border-[#163a5c]/10 bg-white/60 p-2.5 sm:p-3 shadow-sm backdrop-blur-sm">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="grid size-7 place-items-center rounded-lg bg-[#a83f68]/15 text-[#a83f68] shrink-0">
+              <Film size={14} />
             </span>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-[#163a5c] truncate">
+                Film Loaded & Ready
+              </p>
+              <p className="text-[10px] text-[#163a5c]/60 truncate font-mono">
+                {videoKey || "Stream active"}
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept="video/*"
+              accept="video/mp4,video/webm,video/quicktime,video/mkv,video/*"
               className="hidden"
             />
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              className="flex items-center gap-1.5 rounded-xl border border-[#163a5c]/20 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#163a5c] hover:bg-[#163a5c]/5 transition"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#163a5c]/20 bg-white px-3 py-1.5 text-xs font-semibold text-[#163a5c] shadow-sm hover:bg-[#163a5c]/5 transition disabled:opacity-50"
             >
-              <Upload size={12} />
-              {uploading ? "Replacing..." : "Change Film"}
+              <RotateCcw size={12} />
+              <span className="hidden sm:inline">Replace</span>
             </button>
-
             <button
               onClick={handleDeleteVideo}
               disabled={deleting}
-              className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-semibold text-red-600 hover:bg-red-100 transition"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 transition disabled:opacity-50"
             >
               <Trash2 size={12} />
-              {deleting ? "Deleting..." : "Delete Film"}
+              <span className="hidden sm:inline">Remove</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Error alert if upload fails */}
+      {error && (
+        <div className="flex items-center gap-2 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <AlertCircle size={15} className="shrink-0" />
+          <span>{error}</span>
         </div>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { getToken } from "./auth";
+import { RoomMember } from "./types";
 
 function getBaseUrl(): string {
   return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
@@ -71,7 +72,7 @@ export const api = {
     kick: (roomCode: string, userId: number) =>
       request<string>(`/rooms/${roomCode}/kick/${userId}`, { method: "DELETE" }),
     members: (roomCode: string) =>
-      request<{ id: number; user: { id: number; username: string; email: string }; joinedAt: string }[]>(
+      request<RoomMember[]>(
         `/rooms/${roomCode}/members`
       ),
     public: () =>

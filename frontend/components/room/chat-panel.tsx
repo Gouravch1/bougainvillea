@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Send, Smile, Sparkles, Heart } from "lucide-react";
+import { Send, Smile } from "lucide-react";
 import { User } from "@/lib/types";
 
-interface Message {
+export interface ChatMessageItem {
   id: string;
   sender: string;
   text: string;
@@ -15,12 +15,22 @@ interface Message {
 interface ChatPanelProps {
   currentUser: User | null;
   ownerEmail?: string;
+  messages?: ChatMessageItem[];
+  onSendMessage?: (text: string) => void;
+  isConnected?: boolean;
+  className?: string;
 }
 
 const QUICK_EMOJIS = ["❤️", "🍿", "🎬", "😭", "👏", "🌸"];
 
-export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
-  const [messages, setMessages] = useState<Message[]>([
+export function ChatPanel({
+  currentUser,
+  ownerEmail,
+  messages: externalMessages,
+  onSendMessage,
+  className,
+}: ChatPanelProps) {
+  const [internalMessages, setInternalMessages] = useState<ChatMessageItem[]>([
     {
       id: "1",
       sender: "Bougainvillea",
@@ -33,23 +43,31 @@ export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
   const [floatingEmojis, setFloatingEmojis] = useState<{ id: number; char: string; left: number }[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  const activeMessages = externalMessages || internalMessages;
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [activeMessages]);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim()) return;
 
-    const newMsg: Message = {
-      id: Date.now().toString(),
-      sender: currentUser?.username || "Guest",
-      text: inputValue.trim(),
-      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      isHost: currentUser?.email === ownerEmail,
-    };
+    const trimmed = inputValue.trim();
 
-    setMessages((prev) => [...prev, newMsg]);
+    if (onSendMessage) {
+      onSendMessage(trimmed);
+    } else {
+      const newMsg: ChatMessageItem = {
+        id: Date.now().toString(),
+        sender: currentUser?.username || "Guest",
+        text: trimmed,
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        isHost: currentUser?.email === ownerEmail,
+      };
+      setInternalMessages((prev) => [...prev, newMsg]);
+    }
+
     setInputValue("");
   };
 
@@ -61,10 +79,37 @@ export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
     setTimeout(() => {
       setFloatingEmojis((prev) => prev.filter((item) => item.id !== id));
     }, 2000);
+
+    // Broadcast reaction through socket if available
+    if (onSendMessage) {
+      onSendMessage(`REACTION:${char}`);
+    }
   };
 
+  // Listen for reaction messages to display floating emojis
+  useEffect(() => {
+    if (!activeMessages.length) return;
+    const latest = activeMessages[activeMessages.length - 1];
+    if (latest && latest.text.startsWith("REACTION:")) {
+      const emoji = latest.text.replace("REACTION:", "");
+      const id = Date.now() + Math.random();
+      const left = Math.floor(Math.random() * 80) + 10;
+      setFloatingEmojis((prev) => [...prev, { id, char: emoji, left }]);
+      setTimeout(() => {
+        setFloatingEmojis((prev) => prev.filter((item) => item.id !== id));
+      }, 2000);
+    }
+  }, [activeMessages]);
+
+  // Filter out raw reaction markers from display text
+  const displayMessages = activeMessages.filter((m) => !m.text.startsWith("REACTION:"));
+
   return (
-    <div className="relative flex flex-col h-[520px] rounded-3xl border border-[#163a5c]/15 bg-white/70 p-5 shadow-sm">
+    <div
+      className={`relative flex flex-col h-full rounded-2xl sm:rounded-3xl border border-[#163a5c]/15 bg-white/70 p-3 sm:p-5 shadow-sm min-h-0 ${
+        className || ""
+      }`}
+    >
       {/* Floating Emoji Particles */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden z-20">
         {floatingEmojis.map((emoji) => (
@@ -79,25 +124,24 @@ export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
       </div>
 
       {/* Header */}
-      <div className="mb-3 flex items-center justify-between border-b border-[#163a5c]/10 pb-3">
+      <div className="shrink-0 mb-2 sm:mb-3 flex items-center justify-between border-b border-[#163a5c]/10 pb-2 sm:pb-3">
         <div className="flex items-center gap-2">
           <Smile size={16} className="text-[#a83f68]" />
-          <h3 className="font-cormorant text-2xl font-bold text-[#163a5c]">Live Chat</h3>
+          <h3 className="font-cormorant text-xl sm:text-2xl font-bold text-[#163a5c]">Live Chat</h3>
         </div>
-        <span className="text-[10px] text-[#163a5c]/50 font-medium">Local Room Chat</span>
       </div>
 
       {/* Quick Reaction Bar */}
-      <div className="mb-3 flex items-center justify-between rounded-2xl bg-[#163a5c]/5 p-2">
+      <div className="shrink-0 mb-2 sm:mb-3 flex items-center justify-between rounded-xl sm:rounded-2xl bg-[#163a5c]/5 px-2 py-1 sm:p-2">
         <span className="text-[10px] font-bold uppercase tracking-wider text-[#163a5c]/60 pl-1">
           React:
         </span>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 sm:gap-1.5">
           {QUICK_EMOJIS.map((emoji) => (
             <button
               key={emoji}
               onClick={() => triggerReaction(emoji)}
-              className="grid size-8 place-items-center rounded-xl bg-white text-base shadow-sm transition hover:scale-125 hover:bg-[#a83f68]/10"
+              className="grid size-7 sm:size-8 place-items-center rounded-lg sm:rounded-xl bg-white text-sm sm:text-base shadow-sm transition hover:scale-125 hover:bg-[#a83f68]/10"
               title={`React with ${emoji}`}
             >
               {emoji}
@@ -107,8 +151,8 @@ export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
       </div>
 
       {/* Messages Thread */}
-      <div className="flex-1 space-y-3 overflow-y-auto pr-1">
-        {messages.map((msg) => {
+      <div className="flex-1 min-h-0 space-y-2 sm:space-y-3 overflow-y-auto pr-1">
+        {displayMessages.map((msg) => {
           const isMe = msg.sender === currentUser?.username;
           return (
             <div
@@ -127,7 +171,7 @@ export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
                 <span className="text-[9px] text-[#163a5c]/40">{msg.time}</span>
               </div>
               <div
-                className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-xs leading-relaxed shadow-sm ${
+                className={`max-w-[85%] rounded-2xl px-3.5 py-1.5 sm:py-2 text-xs leading-relaxed shadow-sm ${
                   isMe
                     ? "bg-[#172d4d] text-[#f8f5ed] rounded-tr-none"
                     : "bg-white border border-[#163a5c]/10 text-[#163a5c] rounded-tl-none"
@@ -142,7 +186,7 @@ export function ChatPanel({ currentUser, ownerEmail }: ChatPanelProps) {
       </div>
 
       {/* Chat Input */}
-      <form onSubmit={handleSend} className="mt-3 flex items-center gap-2 pt-2 border-t border-[#163a5c]/10">
+      <form onSubmit={handleSend} className="shrink-0 mt-2 sm:mt-3 flex items-center gap-2 pt-2 border-t border-[#163a5c]/10">
         <input
           type="text"
           value={inputValue}

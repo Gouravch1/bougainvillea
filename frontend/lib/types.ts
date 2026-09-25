@@ -16,7 +16,7 @@ export interface Room {
 
 export interface RoomMember {
   id: number;
-  room: Room;
+  room?: Room;
   user: User;
   joinedAt: string;
 }

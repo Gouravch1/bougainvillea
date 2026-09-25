@@ -13,6 +13,7 @@ interface MembersListProps {
   currentUserEmail?: string;
   isOwner: boolean;
   onMemberKicked: () => void;
+  className?: string;
 }
 
 export function MembersList({
@@ -22,6 +23,7 @@ export function MembersList({
   currentUserEmail,
   isOwner,
   onMemberKicked,
+  className,
 }: MembersListProps) {
   const [kickingId, setKickingId] = useState<number | null>(null);
 
@@ -41,12 +43,16 @@ export function MembersList({
   };
 
   return (
-    <div className="flex flex-col rounded-3xl border border-[#163a5c]/15 bg-white/70 p-5 shadow-sm">
+    <div
+      className={`flex flex-col h-full rounded-2xl sm:rounded-3xl border border-[#163a5c]/15 bg-white/70 p-3.5 sm:p-5 shadow-sm min-h-0 ${
+        className || ""
+      }`}
+    >
       {/* Header */}
-      <div className="mb-4 flex items-center justify-between border-b border-[#163a5c]/10 pb-3">
+      <div className="shrink-0 mb-3 sm:mb-4 flex items-center justify-between border-b border-[#163a5c]/10 pb-2 sm:pb-3">
         <div className="flex items-center gap-2">
           <Users size={16} className="text-[#a83f68]" />
-          <h3 className="font-cormorant text-2xl font-bold text-[#163a5c]">
+          <h3 className="font-cormorant text-xl sm:text-2xl font-bold text-[#163a5c]">
             Audience
           </h3>
         </div>
@@ -56,7 +62,7 @@ export function MembersList({
       </div>
 
       {/* Member Cards */}
-      <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
+      <div className="flex-1 min-h-0 space-y-2 sm:space-y-2.5 overflow-y-auto pr-1">
         {members.map((member) => {
           const isMemberOwner = member.user.email === ownerEmail;
           const isMe = member.user.email === currentUserEmail;
@@ -80,47 +86,42 @@ export function MembersList({
                       {member.user.username}
                     </span>
                     {isMe && (
-                      <span className="text-[9px] text-[#163a5c]/50 font-normal">
-                        (you)
+                      <span className="text-[10px] text-[#163a5c]/50 font-medium">
+                        (You)
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 text-[10px] text-[#163a5c]/60">
-                    <span className="size-1.5 rounded-full bg-emerald-500" />
-                    <span>In room</span>
-                  </div>
+                  <span className="text-[9px] text-[#163a5c]/40 font-mono">
+                    Joined {new Date(member.joinedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
                 </div>
               </div>
 
-              {/* Badges & Actions */}
-              <div className="flex items-center gap-2 shrink-0">
-                {isMemberOwner && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-[#a83f68]/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-[#a83f68]">
+              {/* Action Badge */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {isMemberOwner ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[#a83f68]/15 px-2 py-0.5 text-[9px] font-bold uppercase text-[#a83f68]">
                     <Crown size={10} /> Host
                   </span>
-                )}
-
-                {/* Owner kick button */}
-                {isOwner && !isMemberOwner && (
+                ) : isOwner ? (
                   <button
                     onClick={() => handleKick(member.user.id, member.user.username)}
                     disabled={kickingId === member.user.id}
-                    title="Remove from room"
-                    className="grid size-7 place-items-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition"
+                    className="inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[9px] font-semibold text-red-600 hover:bg-red-100 transition disabled:opacity-50"
+                    title="Remove user from room"
                   >
-                    <UserMinus size={13} />
+                    <UserMinus size={10} />
+                    <span>{kickingId === member.user.id ? "Removing..." : "Kick"}</span>
                   </button>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[#163a5c]/5 px-2 py-0.5 text-[9px] font-medium text-[#163a5c]/60">
+                    Viewer
+                  </span>
                 )}
               </div>
             </div>
           );
         })}
-
-        {members.length === 0 && (
-          <div className="py-6 text-center text-xs text-[#163a5c]/60">
-            No audience members yet.
-          </div>
-        )}
       </div>
     </div>
   );
