@@ -1,9 +1,6 @@
 import { getToken } from "./auth";
 
 function getBaseUrl(): string {
-  if (typeof window !== "undefined" && window.location.hostname) {
-    return `http://${window.location.hostname}:8080`;
-  }
   return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 }
 
