@@ -5,6 +5,9 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -23,6 +26,10 @@ import com.bougainvillea.backend.util.RandomCodeGenerator;
 
 @Service
 public class RoomService {
+    private static final Logger log = LoggerFactory.getLogger(RoomService.class);
+
+    // Rooms are considered abandoned if host hasn't pinged in this many minutes
+    private static final int HEARTBEAT_TIMEOUT_MINUTES = 2;
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final RandomCodeGenerator randomCodeGenerator;
@@ -246,6 +253,49 @@ public class RoomService {
             r2StorageService.deleteFile(room.getVideoKey());
             room.setVideoKey(null);
             roomRepository.save(room);
+        }
+    }
+    // HOST HEARTBEAT — called by frontend every 30s while host is in room
+    @Transactional
+    public void updateHostHeartbeat(String roomCode, String email) {
+        Room room = roomRepository.findByRoomCode(roomCode)
+                .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
+        if (!room.getOwner().getEmail().equals(email)) {
+            throw new RuntimeException("Only the room owner can send a heartbeat");
+        }
+        room.setLastHostHeartbeat(LocalDateTime.now());
+        roomRepository.save(room);
+    }
+
+    // SCHEDULED CLEANUP — runs every 60 seconds
+    // Deletes rooms where the host has been MIA for HEARTBEAT_TIMEOUT_MINUTES
+    @Scheduled(fixedRate = 60_000)
+    @Transactional
+    public void cleanupAbandonedRooms() {
+        LocalDateTime cutoff = LocalDateTime.now().minusMinutes(HEARTBEAT_TIMEOUT_MINUTES);
+        LocalDateTime graceCutoff = LocalDateTime.now().minusMinutes(5); // don't touch rooms < 5 min old
+        List<Room> abandoned = roomRepository.findAbandonedRooms(cutoff, graceCutoff);
+
+        for (Room room : abandoned) {
+            try {
+                log.info("[Cleanup] Deleting abandoned room: {} (host: {})",
+                        room.getRoomCode(), room.getOwner().getEmail());
+
+                // Delete video from R2 first
+                if (room.getVideoKey() != null && !room.getVideoKey().isBlank()) {
+                    r2StorageService.deleteFile(room.getVideoKey());
+                }
+
+                roomMemberRepository.deleteAllByRoom(room);
+                roomRepository.delete(room);
+
+            } catch (Exception e) {
+                log.error("[Cleanup] Failed to delete room {}: {}", room.getRoomCode(), e.getMessage());
+            }
+        }
+
+        if (!abandoned.isEmpty()) {
+            log.info("[Cleanup] Deleted {} abandoned room(s)", abandoned.size());
         }
     }
 }

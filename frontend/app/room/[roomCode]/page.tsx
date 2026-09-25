@@ -192,6 +192,17 @@ export default function RoomPage({ params }: RoomPageProps) {
     return () => clearInterval(interval);
   }, [checkRoomStatus, exitNotice]);
 
+  // Host heartbeat — keeps room alive every 30s while host is present
+  useEffect(() => {
+    if (!isOwner || exitNotice) return;
+    // Send immediately on mount so room isn't cleaned up on first scheduler run
+    api.rooms.heartbeat(roomCode).catch(() => {});
+    const interval = setInterval(() => {
+      api.rooms.heartbeat(roomCode).catch(() => {});
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [isOwner, roomCode, exitNotice]);
+
   // Redirect after notice popup
   useEffect(() => {
     if (exitNotice) {
