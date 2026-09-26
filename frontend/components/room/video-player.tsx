@@ -246,16 +246,40 @@ export const VideoPlayer = React.memo(function VideoPlayer({
 
     setError(null);
     setUploading(true);
-    setUploadProgress(20);
+    setUploadProgress(0);
 
     try {
-      const sim = setInterval(() => {
-        setUploadProgress((p) => (p && p < 90 ? p + 15 : p));
-      }, 400);
+      // STEP 1: Get a presigned PUT URL from backend
+      const { videoKey, videoUrl: presignedUploadUrl } = await api.video.getUploadUrl(
+        roomCode,
+        file.name,
+        file.type || "video/mp4"
+      );
 
-      await api.video.upload(roomCode, file);
+      // STEP 2: Upload directly to R2 with real progress tracking via XHR
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", presignedUploadUrl);
+        xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
 
-      clearInterval(sim);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const pct = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(pct);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`Upload to R2 failed: ${xhr.status}`));
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload."));
+        xhr.send(file);
+      });
+
+      // STEP 3: Tell backend the upload is done — save fileKey to DB
+      await api.video.confirmUpload(roomCode, videoKey);
+
       setUploadProgress(100);
       toast.success("Film uploaded successfully!");
       onVideoUpdated();
@@ -269,6 +293,7 @@ export const VideoPlayer = React.memo(function VideoPlayer({
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
+
 
   const handleDeleteVideo = async () => {
     if (!confirm("Are you sure you want to remove the current film from the room?")) return;

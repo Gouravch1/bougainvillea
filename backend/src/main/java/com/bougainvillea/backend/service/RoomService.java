@@ -1,6 +1,5 @@
 package com.bougainvillea.backend.service;
 
-import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -190,9 +189,9 @@ public class RoomService {
                 .toList();
     }
 
-    // UPLOAD / UPDATE ROOM VIDEO (Owner only)
+    //Get presigned upload URL
     @Transactional
-    public RoomVideoResponse uploadRoomVideo(String roomCode, MultipartFile file, String email) throws IOException {
+    public RoomVideoResponse getPresignedUploadUrl(String roomCode, String fileName, String contentType, String email) {
         Room room = roomRepository.findByRoomCode(roomCode)
                 .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
 
@@ -203,14 +202,31 @@ public class RoomService {
         // Clean up previous video from R2 if one existed
         if (room.getVideoKey() != null && !room.getVideoKey().isBlank()) {
             r2StorageService.deleteFile(room.getVideoKey());
+            room.setVideoKey(null);
+            roomRepository.save(room);
         }
 
-        String newVideoKey = r2StorageService.uploadFile(file);
-        room.setVideoKey(newVideoKey);
+        R2StorageService.PresignedUploadResult result =
+                r2StorageService.generatePresignedUploadUrl(fileName, contentType);
+
+        return new RoomVideoResponse(roomCode, result.fileKey(), result.uploadUrl());
+    }
+
+    // Confirm upload
+    @Transactional
+    public RoomVideoResponse confirmVideoUpload(String roomCode, String fileKey, String email) {
+        Room room = roomRepository.findByRoomCode(roomCode)
+                .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
+
+        if (!room.getOwner().getEmail().equals(email)) {
+            throw new RuntimeException("Only the room owner can confirm a video upload");
+        }
+
+        room.setVideoKey(fileKey);
         roomRepository.save(room);
 
-        String presignedUrl = r2StorageService.generatePresignedUrl(newVideoKey);
-        return new RoomVideoResponse(roomCode, newVideoKey, presignedUrl);
+        String playbackUrl = r2StorageService.generatePresignedUrl(fileKey);
+        return new RoomVideoResponse(roomCode, fileKey, playbackUrl);
     }
 
     // GET ROOM VIDEO PRESIGNED URL (Members, Owner, or Public Room)

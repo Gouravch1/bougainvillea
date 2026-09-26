@@ -1,20 +1,18 @@
 package com.bougainvillea.backend.service;
 
-import java.io.IOException;
 import java.time.Duration;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 
-import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest;
 
 @Service 
 public class R2StorageService {
@@ -29,28 +27,33 @@ public class R2StorageService {
         this.s3Presigner = s3Presigner;
     }
 
-    // UPLOAD FILE
-    public String uploadFile(MultipartFile file) throws IOException{
-        String originalFileName = file.getOriginalFilename();
-
-        String extension = originalFileName != null && originalFileName.contains(".") 
-                ? originalFileName.substring(originalFileName.lastIndexOf(".")) 
+    public PresignedUploadResult generatePresignedUploadUrl(String originalFileName, String contentType) {
+        String extension = originalFileName != null && originalFileName.contains(".")
+                ? originalFileName.substring(originalFileName.lastIndexOf("."))
                 : "";
 
-        String uniqueFileName = UUID.randomUUID() + extension;
+        String fileKey = UUID.randomUUID() + extension;
 
         PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                 .bucket(bucketName)
-                .key(uniqueFileName)
-                .contentType(file.getContentType())
+                .key(fileKey)
+                .contentType(contentType)
                 .build();
 
-        s3Client.putObject(putObjectRequest, RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
-        
-        return uniqueFileName;
+        PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofHours(12))
+                .putObjectRequest(putObjectRequest)
+                .build();
+
+        String uploadUrl = s3Presigner.presignPutObject(presignRequest).url().toString();
+        return new PresignedUploadResult(fileKey, uploadUrl);
     }
 
-    // GENERATE PRESIGNED URL (Valid for 2 hours)
+    // Simple DTO to return both fileKey and uploadUrl together
+    public record PresignedUploadResult(String fileKey, String uploadUrl) {}
+
+
+    // GENERATE PRESIGNED PLAYBACK URL (Valid for 8 hours — supports long watch parties)
     public String generatePresignedUrl(String fileKey) {
         if (fileKey == null || fileKey.isBlank()) {
             return null;
@@ -62,7 +65,7 @@ public class R2StorageService {
                 .build();
 
         GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
-                .signatureDuration(Duration.ofHours(2))
+                .signatureDuration(Duration.ofHours(12))
                 .getObjectRequest(getObjectRequest)
                 .build();
 

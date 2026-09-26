@@ -1,11 +1,9 @@
 package com.bougainvillea.backend.controller;
 
 import com.bougainvillea.backend.service.R2StorageService;
-import java.io.IOException;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/media")
@@ -17,21 +15,22 @@ public class MediaController {
         this.r2StorageService = r2StorageService;
     }
 
-    // UPLOAD VIDEO
-    @PostMapping("/upload")
-    public ResponseEntity<?> uploadVideo(@RequestParam("file") MultipartFile file) {
-        if (file.isEmpty()) {
-            return ResponseEntity.badRequest().body("File cannot be empty");
+    // GET PRESIGNED UPLOAD URL
+    @PostMapping("/upload-url")
+    public ResponseEntity<?> getUploadUrl(
+            @RequestParam("fileName") String fileName,
+            @RequestParam("contentType") String contentType) {
+
+        if (fileName == null || fileName.isBlank()) {
+            return ResponseEntity.badRequest().body("fileName cannot be empty");
         }
 
-        try {
-            String fileKey = r2StorageService.uploadFile(file);
-            return ResponseEntity.ok(Map.of(
-                "message", "Upload successful",
-                "fileKey", fileKey
-            ));
-        } catch (IOException e) {
-            return ResponseEntity.internalServerError().body("Upload failed: " + e.getMessage());
-        }
+        R2StorageService.PresignedUploadResult result =
+                r2StorageService.generatePresignedUploadUrl(fileName, contentType);
+
+        return ResponseEntity.ok(Map.of(
+                "fileKey", result.fileKey(),
+                "uploadUrl", result.uploadUrl()
+        ));
     }
 }

@@ -83,14 +83,20 @@ export const api = {
 
   // ─── Video ─────────────────────────────────────────────────────────────────
   video: {
-    upload: (roomCode: string, file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      return request<{ roomCode: string; videoKey: string; videoUrl: string }>(
-        `/rooms/${roomCode}/video`,
-        { method: "POST", body: formData, isFormData: true }
-      );
-    },
+    // STEP 1: Get a presigned PUT URL — browser will upload directly to R2
+    getUploadUrl: (roomCode: string, fileName: string, contentType: string) =>
+      request<{ roomCode: string; videoKey: string; videoUrl: string }>(
+        `/rooms/${roomCode}/video/presigned-url?fileName=${encodeURIComponent(fileName)}&contentType=${encodeURIComponent(contentType)}`,
+        { method: "POST" }
+      ),
+
+    // STEP 2: Confirm upload — saves fileKey to DB after browser finishes uploading
+    confirmUpload: (roomCode: string, fileKey: string) =>
+      request<{ roomCode: string; videoKey: string; videoUrl: string }>(
+        `/rooms/${roomCode}/video/confirm?fileKey=${encodeURIComponent(fileKey)}`,
+        { method: "POST" }
+      ),
+
     get: (roomCode: string) =>
       request<{ roomCode: string; videoKey: string | null; videoUrl: string | null }>(
         `/rooms/${roomCode}/video`
