@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   Upload,
   Trash2,
@@ -13,6 +13,7 @@ import {
   AlertCircle,
   RotateCcw,
   Crown,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -58,78 +59,163 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   const [showControls, setShowControls] = useState(true);
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Autoplay blocked state (when browser blocks audio on fresh load)
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  // Video loading/buffering indicator
+  const [isVideoLoading, setIsVideoLoading] = useState(false);
+
   // Flag to suppress echoing events that were initiated remotely via WebSocket
   const isRemoteActionRef = useRef(false);
+  const pendingSyncRef = useRef<SyncMessage | null>(null);
+  // Track previous videoUrl so we can detect src change
+  const prevVideoUrlRef = useRef<string | null>(null);
+
+  // Apply a sync message to the video element
+  const applySyncMessage = useCallback(
+    (msg: SyncMessage) => {
+      if (!videoRef.current) return;
+
+      // Only owner suppresses their own echo of PLAY/PAUSE/SEEK
+      if (isOwner && msg.sender && msg.sender === currentUsername) {
+        return;
+      }
+      // Guests only ignore their own SYNC_REQUEST
+      if (!isOwner && msg.action === "SYNC_REQUEST" && msg.sender && msg.sender === currentUsername) {
+        return;
+      }
+
+      isRemoteActionRef.current = true;
+
+      switch (msg.action) {
+        case "PLAY": {
+          const latency = Math.max(0, (Date.now() - msg.timestamp) / 1000);
+          const expectedTime = Math.max(0, (msg.currentTime || 0) + latency);
+          if (Math.abs(videoRef.current.currentTime - expectedTime) > 0.4) {
+            videoRef.current.currentTime = expectedTime;
+            setCurrentTime(expectedTime);
+          }
+          if (msg.playbackRate) {
+            videoRef.current.playbackRate = msg.playbackRate;
+          }
+
+          const playPromise = videoRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                setIsPlaying(true);
+                setAutoplayBlocked(false);
+              })
+              .catch((err) => {
+                console.warn("[VideoPlayer] Autoplay with audio prevented, trying muted autoplay:", err);
+                if (videoRef.current) {
+                  videoRef.current.muted = true;
+                  setIsMuted(true);
+                  videoRef.current
+                    .play()
+                    .then(() => {
+                      setIsPlaying(true);
+                      setAutoplayBlocked(true);
+                    })
+                    .catch(() => {
+                      setIsPlaying(false);
+                      setAutoplayBlocked(true);
+                    });
+                }
+              });
+          }
+          break;
+        }
+        case "PAUSE": {
+          videoRef.current.pause();
+          const targetTime = msg.currentTime || 0;
+          videoRef.current.currentTime = targetTime;
+          setCurrentTime(targetTime);
+          setIsPlaying(false);
+          setAutoplayBlocked(false);
+          break;
+        }
+        case "SEEK": {
+          const targetTime = msg.currentTime || 0;
+          videoRef.current.currentTime = targetTime;
+          setCurrentTime(targetTime);
+          break;
+        }
+        case "SPEED_CHANGE": {
+          if (msg.playbackRate) {
+            videoRef.current.playbackRate = msg.playbackRate;
+          }
+          break;
+        }
+        case "SYNC_REQUEST": {
+          // If we are the host and someone joins asking for state, broadcast our current state
+          if (isOwner && sendSyncAction && videoRef.current) {
+            sendSyncAction(
+              videoRef.current.paused ? "PAUSE" : "PLAY",
+              videoRef.current.currentTime,
+              videoRef.current.playbackRate
+            );
+          }
+          break;
+        }
+        case "SYNC_RESPONSE": {
+          if (!isOwner && videoRef.current) {
+            const latency = Math.max(0, (Date.now() - msg.timestamp) / 1000);
+            const expectedTime = Math.max(0, (msg.currentTime || 0) + latency);
+            videoRef.current.currentTime = expectedTime;
+            setCurrentTime(expectedTime);
+          }
+          break;
+        }
+      }
+
+      setTimeout(() => {
+        isRemoteActionRef.current = false;
+      }, 300);
+    },
+    [currentUsername, isOwner, sendSyncAction]
+  );
+
+  // When videoUrl changes, show loading spinner until video can play
+  useEffect(() => {
+    if (!videoUrl) {
+      setIsVideoLoading(false);
+      return;
+    }
+    if (videoUrl !== prevVideoUrlRef.current) {
+      prevVideoUrlRef.current = videoUrl;
+      setIsVideoLoading(true);
+      setIsPlaying(false);
+      setCurrentTime(0);
+      setDuration(0);
+      pendingSyncRef.current = null;
+    }
+  }, [videoUrl]);
 
   // Listen to remote WebSocket sync messages
   useEffect(() => {
-    if (!syncMessage || !videoRef.current) return;
+    if (!syncMessage) return;
 
-    // Suppress local echo
-    if (syncMessage.sender && syncMessage.sender === currentUsername) {
+    // Suppress host self-echo
+    if (isOwner && syncMessage.sender && syncMessage.sender === currentUsername) {
       return;
     }
 
-    isRemoteActionRef.current = true;
-
-    switch (syncMessage.action) {
-      case "PLAY": {
-        const latency = Math.max(0, (Date.now() - syncMessage.timestamp) / 1000);
-        const expectedTime = syncMessage.currentTime + latency;
-        if (Math.abs(videoRef.current.currentTime - expectedTime) > 0.4) {
-          videoRef.current.currentTime = expectedTime;
-        }
-        videoRef.current
-          .play()
-          .then(() => setIsPlaying(true))
-          .catch(() => {
-            console.warn("[VideoPlayer] Autoplay prevented, requires user interaction.");
-          });
-        break;
+    // Buffer the message if video isn't ready yet (readyState 0 = no data at all)
+    // But only buffer PLAY/PAUSE/SEEK — not SYNC_REQUEST (host handles those regardless)
+    if (!videoRef.current || videoRef.current.readyState < 1) {
+      if (
+        syncMessage.action === "PLAY" ||
+        syncMessage.action === "PAUSE" ||
+        syncMessage.action === "SEEK" ||
+        syncMessage.action === "SYNC_RESPONSE"
+      ) {
+        pendingSyncRef.current = syncMessage;
       }
-      case "PAUSE": {
-        videoRef.current.pause();
-        videoRef.current.currentTime = syncMessage.currentTime;
-        setIsPlaying(false);
-        break;
-      }
-      case "SEEK": {
-        videoRef.current.currentTime = syncMessage.currentTime;
-        setCurrentTime(syncMessage.currentTime);
-        break;
-      }
-      case "SPEED_CHANGE": {
-        if (syncMessage.playbackRate) {
-          videoRef.current.playbackRate = syncMessage.playbackRate;
-        }
-        break;
-      }
-      case "SYNC_REQUEST": {
-        // If we are the host and someone joins asking for state, broadcast our current state
-        if (isOwner && sendSyncAction && videoRef.current) {
-          sendSyncAction(
-            videoRef.current.paused ? "PAUSE" : "PLAY",
-            videoRef.current.currentTime,
-            videoRef.current.playbackRate
-          );
-        }
-        break;
-      }
-      case "SYNC_RESPONSE": {
-        if (!isOwner && videoRef.current) {
-          const latency = Math.max(0, (Date.now() - syncMessage.timestamp) / 1000);
-          videoRef.current.currentTime = syncMessage.currentTime + latency;
-        }
-        break;
-      }
+      return;
     }
 
-    const timer = setTimeout(() => {
-      isRemoteActionRef.current = false;
-    }, 250);
-
-    return () => clearTimeout(timer);
-  }, [syncMessage, isOwner, currentUsername, sendSyncAction]);
+    applySyncMessage(syncMessage);
+  }, [syncMessage, applySyncMessage, currentUsername, isOwner]);
 
   // Handle keyboard shortcut (Space to toggle play) - Owner only
   useEffect(() => {
@@ -179,6 +265,45 @@ export const VideoPlayer = React.memo(function VideoPlayer({
   const handleLoadedMetadata = () => {
     if (!videoRef.current) return;
     setDuration(videoRef.current.duration);
+    setIsVideoLoading(false);
+
+    if (pendingSyncRef.current) {
+      const msg = pendingSyncRef.current;
+      pendingSyncRef.current = null;
+      applySyncMessage(msg);
+    } else if (!isOwner && sendSyncAction) {
+      // Fire SYNC_REQUEST now that metadata is loaded and we know the seek-able position
+      sendSyncAction("SYNC_REQUEST", 0);
+    }
+  };
+
+  // Also clear loading on canplay (fires even before full metadata on some browsers)
+  const handleCanPlay = () => {
+    setIsVideoLoading(false);
+  };
+
+  const handleVideoWaiting = () => {
+    // Buffering mid-playback (not the initial load)
+    if (isPlaying) setIsVideoLoading(true);
+  };
+
+  const handleVideoPlaying = () => {
+    setIsVideoLoading(false);
+  };
+
+  const handleUnmute = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!videoRef.current) return;
+    videoRef.current.muted = false;
+    setIsMuted(false);
+    videoRef.current
+      .play()
+      .then(() => {
+        setIsPlaying(true);
+        setAutoplayBlocked(false);
+      })
+      .catch(() => {});
+    setAutoplayBlocked(false);
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -326,11 +451,15 @@ export const VideoPlayer = React.memo(function VideoPlayer({
               src={videoUrl}
               playsInline
               preload="auto"
-              onClick={isOwner ? togglePlay : undefined}
+              onClick={isOwner ? togglePlay : (autoplayBlocked ? handleUnmute : undefined)}
               onTimeUpdate={handleTimeUpdate}
               onLoadedMetadata={handleLoadedMetadata}
+              onCanPlay={handleCanPlay}
+              onWaiting={handleVideoWaiting}
+              onPlaying={handleVideoPlaying}
               onPlay={() => {
                 setIsPlaying(true);
+                setIsVideoLoading(false);
                 if (!isRemoteActionRef.current && isOwner) {
                   sendSyncAction?.("PLAY", videoRef.current?.currentTime || 0);
                 }
@@ -342,11 +471,23 @@ export const VideoPlayer = React.memo(function VideoPlayer({
                 }
               }}
               onEnded={() => setIsPlaying(false)}
-              className={`h-full w-full object-contain ${isOwner ? "cursor-pointer" : "cursor-default"}`}
+              className={`h-full w-full object-contain ${
+                isOwner ? "cursor-pointer" : (autoplayBlocked ? "cursor-pointer" : "cursor-default")
+              }`}
             />
 
+            {/* Video Loading / Buffering Spinner - shown while video data loads */}
+            {isVideoLoading && (
+              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/60 backdrop-blur-[3px]">
+                <Loader2 size={36} className="animate-spin text-[#a83f68] mb-3" />
+                <p className="text-xs font-semibold text-white/80">
+                  {!duration ? "Loading film…" : "Buffering…"}
+                </p>
+              </div>
+            )}
+
             {/* Big Center Play/Pause Overlay Animation (Host only) */}
-            {(!isPlaying || showControls) && isOwner && (
+            {(!isPlaying || showControls) && isOwner && !isVideoLoading && (
               <div
                 onClick={togglePlay}
                 className="absolute inset-0 flex items-center justify-center bg-black/25 cursor-pointer transition-opacity duration-300"
@@ -361,8 +502,32 @@ export const VideoPlayer = React.memo(function VideoPlayer({
               </div>
             )}
 
+            {/* Viewer Autoplay Blocked - Tap to Unmute Overlay */}
+            {autoplayBlocked && !isOwner && (
+              <div
+                onClick={handleUnmute}
+                className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 cursor-pointer backdrop-blur-[2px] transition-all hover:bg-black/35"
+              >
+                <div className="flex flex-col items-center gap-3 rounded-3xl border border-white/25 bg-black/85 px-6 py-4 text-center text-white shadow-2xl animate-in zoom-in-95 duration-200">
+                  <div className="grid size-12 place-items-center rounded-2xl bg-[#a83f68] text-white shadow-lg animate-pulse">
+                    <VolumeX size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-sm sm:text-base">Host is playing live!</h4>
+                    <p className="mt-0.5 text-xs text-white/70">Click anywhere to listen with audio</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-1 rounded-xl bg-white px-5 py-2 text-xs font-bold text-[#163a5c] shadow hover:bg-white/90 transition"
+                  >
+                    Tap to Unmute & Listen
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Viewer Paused State Overlay */}
-            {!isPlaying && !isOwner && (
+            {!isPlaying && !isOwner && !autoplayBlocked && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none transition-opacity duration-300">
                 <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/75 px-4 py-2 text-xs font-semibold text-white/90 backdrop-blur-md shadow-2xl">
                   <span className="size-2 rounded-full bg-amber-400 animate-pulse" />

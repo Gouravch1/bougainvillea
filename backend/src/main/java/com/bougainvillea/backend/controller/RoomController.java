@@ -110,12 +110,5 @@ public class RoomController {
         roomService.deleteRoomVideo(roomCode, authentication.getName());
         return ResponseEntity.ok("Room video deleted successfully");
     }
-
-    // POST -> HOST HEARTBEAT (keeps room alive while host is present)
-    @PostMapping("/{roomCode}/heartbeat")
-    public ResponseEntity<Void> heartbeat(@PathVariable String roomCode, Authentication authentication) {
-        roomService.updateHostHeartbeat(roomCode, authentication.getName());
-        return ResponseEntity.ok().build();
-    }
 }
 

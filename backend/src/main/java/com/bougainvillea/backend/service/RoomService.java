@@ -27,8 +27,8 @@ import com.bougainvillea.backend.util.RandomCodeGenerator;
 public class RoomService {
     private static final Logger log = LoggerFactory.getLogger(RoomService.class);
 
-    // Rooms are considered abandoned if host hasn't pinged in this many minutes
-    private static final int HEARTBEAT_TIMEOUT_MINUTES = 2;
+    // Stale rooms older than this many hours are cleaned up automatically
+    private static final int STALE_ROOM_TTL_HOURS = 12;
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final RandomCodeGenerator randomCodeGenerator;
@@ -271,30 +271,18 @@ public class RoomService {
             roomRepository.save(room);
         }
     }
-    // HOST HEARTBEAT — called by frontend every 30s while host is in room
-    @Transactional
-    public void updateHostHeartbeat(String roomCode, String email) {
-        Room room = roomRepository.findByRoomCode(roomCode)
-                .orElseThrow(() -> new RuntimeException("Room not found: " + roomCode));
-        if (!room.getOwner().getEmail().equals(email)) {
-            throw new RuntimeException("Only the room owner can send a heartbeat");
-        }
-        room.setLastHostHeartbeat(LocalDateTime.now());
-        roomRepository.save(room);
-    }
 
-    // SCHEDULED CLEANUP — runs every 60 seconds
-    // Deletes rooms where the host has been MIA for HEARTBEAT_TIMEOUT_MINUTES
-    @Scheduled(fixedRate = 60_000)
+    // SCHEDULED CLEANUP — runs once every hour
+    // Deletes stale rooms older than 12 hours so R2 storage and DB stay clean
+    @Scheduled(fixedRate = 3600_000)
     @Transactional
     public void cleanupAbandonedRooms() {
-        LocalDateTime cutoff = LocalDateTime.now().minusMinutes(HEARTBEAT_TIMEOUT_MINUTES);
-        LocalDateTime graceCutoff = LocalDateTime.now().minusMinutes(5); // don't touch rooms < 5 min old
-        List<Room> abandoned = roomRepository.findAbandonedRooms(cutoff, graceCutoff);
+        LocalDateTime cutoff = LocalDateTime.now().minusHours(STALE_ROOM_TTL_HOURS);
+        List<Room> staleRooms = roomRepository.findStaleRooms(cutoff);
 
-        for (Room room : abandoned) {
+        for (Room room : staleRooms) {
             try {
-                log.info("[Cleanup] Deleting abandoned room: {} (host: {})",
+                log.info("[Cleanup] Deleting stale room: {} (host: {})",
                         room.getRoomCode(), room.getOwner().getEmail());
 
                 // Delete video from R2 first
@@ -310,8 +298,8 @@ public class RoomService {
             }
         }
 
-        if (!abandoned.isEmpty()) {
-            log.info("[Cleanup] Deleted {} abandoned room(s)", abandoned.size());
+        if (!staleRooms.isEmpty()) {
+            log.info("[Cleanup] Deleted {} stale room(s)", staleRooms.size());
         }
     }
 }

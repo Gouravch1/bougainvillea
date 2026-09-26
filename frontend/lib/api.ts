@@ -77,8 +77,6 @@ export const api = {
       ),
     public: () =>
       request<{ roomCode: string; roomName: string; isPublic: boolean }[]>("/rooms/public"),
-    heartbeat: (roomCode: string) =>
-      request<void>(`/rooms/${roomCode}/heartbeat`, { method: "POST" }),
   },
 
   // ─── Video ─────────────────────────────────────────────────────────────────

@@ -36,8 +36,6 @@ public class Room {
 
     private LocalDateTime createdAt;
 
-    private LocalDateTime lastHostHeartbeat;
-
     private String videoKey;
 
     @ManyToOne

@@ -19,7 +19,7 @@ public interface RoomRepository extends JpaRepository<Room, Long> {
 
     List<Room> findByIsPublicTrue();
 
-    // Rooms where host heartbeat is stale AND room is older than 5 minutes (grace period for new rooms)
-    @Query("SELECT r FROM Room r WHERE r.createdAt < :graceCutoff AND (r.lastHostHeartbeat IS NULL OR r.lastHostHeartbeat < :cutoff)")
-    List<Room> findAbandonedRooms(@Param("cutoff") LocalDateTime cutoff, @Param("graceCutoff") LocalDateTime graceCutoff);
+    // Rooms older than cutoff (e.g. 12 hours) for background cleanup
+    @Query("SELECT r FROM Room r WHERE r.createdAt < :cutoff")
+    List<Room> findStaleRooms(@Param("cutoff") LocalDateTime cutoff);
 }
