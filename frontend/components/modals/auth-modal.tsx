@@ -14,9 +14,30 @@ export function AuthModal() {
 
   if (!authModalOpen) return null;
 
+  const validatePassword = (pwd: string): string | null => {
+    const missing: string[] = [];
+    if (!/[A-Z]/.test(pwd)) missing.push("one uppercase letter (A–Z)");
+    if (!/[a-z]/.test(pwd)) missing.push("one lowercase letter (a–z)");
+    if (!/[0-9]/.test(pwd)) missing.push("one number (0–9)");
+    if (!/[^A-Za-z0-9]/.test(pwd)) missing.push("one special character (!@#$…)");
+    if (pwd.length < 8) missing.push("at least 8 characters");
+    if (missing.length === 0) return null;
+    return `Password must include: ${missing.join(", ")}.`;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    // Client-side password validation for register
+    if (authModalMode === "register") {
+      const pwdError = validatePassword(password);
+      if (pwdError) {
+        setError(pwdError);
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
       if (authModalMode === "login") {
@@ -130,6 +151,11 @@ export function AuthModal() {
               placeholder="••••••••"
               className="w-full rounded-xl border border-[#163a5c]/20 bg-white/80 px-4 py-2.5 text-sm text-[#163a5c] placeholder-[#163a5c]/40 outline-none transition focus:border-[#a83f68] focus:ring-2 focus:ring-[#a83f68]/20"
             />
+            {authModalMode === "register" && (
+              <p className="mt-1.5 text-[10px] text-[#163a5c]/50">
+                Must have 8+ chars, uppercase, lowercase, number &amp; special character.
+              </p>
+            )}
           </div>
 
           <button

@@ -35,7 +35,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${manrope.variable} ${cormorant.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
+      <body className={`${manrope.variable} ${cormorant.variable} ${jetbrainsMono.variable} font-sans antialiased`} suppressHydrationWarning>
         <Providers>
           {children}
         </Providers>
